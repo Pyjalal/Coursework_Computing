@@ -1,0 +1,95 @@
+CHIP CPU {
+
+    IN  inM[16],         // M value input (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M?
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // Address of next instruction
+
+    PARTS:
+    // Determine instruction type
+    Not(in=instruction[15], out=notOp);
+    Mux16(a=aluOut, b=instruction, sel=notOp, out=entryMuxOut);
+
+    // A Register logic
+    Or(a=notOp, b=instruction[5], out=loadA); // Load A for A-instruction or if destination is A
+    ARegister(in=entryMuxOut, load=loadA, out=A, out[0..14]=addressM);
+
+    // D Register logic
+    And(a=instruction[15], b=instruction[4], out=loadD); // Load D if destination is D
+    DRegister(in=aluOut, load=loadD, out=D);
+
+    // ALU logic
+    // Select A or M as the second ALU input
+    Mux16(a=A, b=inM, sel=instruction[12], out=aluInputY);
+    ALU(
+        x=D,
+        y=aluInputY,
+        zx=instruction[11],
+        nx=instruction[10],
+        zy=instruction[9],
+        ny=instruction[8],
+        f=instruction[7],
+        no=instruction[6],
+        out=aluOut,
+        out=outM,
+        zr=zr,
+        ng=ng
+    );
+
+    // Write to M if destination is M
+    And(a=instruction[15], b=instruction[3], out=writeM);
+
+    // Compute the jump condition
+    // Extract jump bits
+    And(a=instruction[15], b=instruction[0], out=j1);
+    And(a=instruction[15], b=instruction[1], out=j2);
+    And(a=instruction[15], b=instruction[2], out=j3);
+
+    // Compute flags
+    Not(in=zr, out=notZR);
+    Not(in=ng, out=notNG);
+
+    // Jump Conditions
+    // JGT: notZR & notNG
+    And(a=notZR, b=notNG, out=condJGT);
+
+    // JEQ: zr
+    // condJEQ is zr (already available)
+
+    // JGE: notNG
+    // condJGE is notNG (already available)
+
+    // JLT: ng
+    // condJLT is ng (already available)
+
+    // JNE: notZR
+    // condJNE is notZR (already available)
+
+    // JLE: zr | ng
+    Or(a=zr, b=ng, out=condJLE);
+
+    // JMP: Always true
+    // condJMP is true
+
+    // Combine conditions with jump bits
+    And(a=j1, b=condJGT, out=jumpJGT);
+    And(a=j2, b=zr, out=jumpJEQ);
+    And(a=j3, b=ng, out=jumpJLT);
+
+    // Combine all conditions for actual jumps
+    Or(a=jumpJGT, b=jumpJEQ, out=condPartial1);
+    Or(a=condPartial1, b=jumpJLT, out=condActualJump);
+
+    // Predict "not taken"
+    // pcLoad is true only if a jump condition is true
+    And(a=instruction[15], b=condActualJump, out=pcLoad);
+
+    // Program Counter
+    PC(in=A, load=pcLoad, inc=true, reset=reset, out[0..14]=pc);
+}
