@@ -1,95 +1,70 @@
 CHIP CPU {
 
-    IN  inM[16],         // M value input (M = contents of RAM[A])
-        instruction[16], // Instruction for execution
-        reset;           // Signals whether to re-start the current
-                         // program (reset==1) or continue executing
-                         // the current program (reset==0).
+    IN  inM[16],              // M value input (contents of RAM[A])
+        instruction[16],      // Instruction for execution
+        reset;                // Reset signal: 1 to restart the program, 0 to continue
 
-    OUT outM[16],        // M value output
-        writeM,          // Write to M?
-        addressM[15],    // Address in data memory (of M)
-        pc[15];          // Address of next instruction
+    OUT outM[16],             // M value output (result from ALU)
+        writeM,               // Write enable for M
+        addressM[15],         // Address in data memory (for M)
+        pc[15];               // Program counter for next instruction
 
     PARTS:
-    // Determine instruction type
-    Not(in=instruction[15], out=notOp);
-    Mux16(a=aluOut, b=instruction, sel=notOp, out=entryMuxOut);
-
-    // A Register logic
-    Or(a=notOp, b=instruction[5], out=loadA); // Load A for A-instruction or if destination is A
-    ARegister(in=entryMuxOut, load=loadA, out=A, out[0..14]=addressM);
-
-    // D Register logic
-    And(a=instruction[15], b=instruction[4], out=loadD); // Load D if destination is D
-    DRegister(in=aluOut, load=loadD, out=D);
-
-    // ALU logic
-    // Select A or M as the second ALU input
-    Mux16(a=A, b=inM, sel=instruction[12], out=aluInputY);
-    ALU(
-        x=D,
-        y=aluInputY,
-        zx=instruction[11],
-        nx=instruction[10],
-        zy=instruction[9],
-        ny=instruction[8],
-        f=instruction[7],
-        no=instruction[6],
-        out=aluOut,
-        out=outM,
-        zr=zr,
-        ng=ng
-    );
-
-    // Write to M if destination is M
+    
+    // Decode A/C Instruction: 0 = A-instruction, 1 = C-instruction
+    Not(in=instruction[15], out=isAInstruction);
+    
+    // Memory Write Enable for C-instructions (based on d3 bit in instruction)
     And(a=instruction[15], b=instruction[3], out=writeM);
 
-    // Compute the jump condition
-    // Extract jump bits
-    And(a=instruction[15], b=instruction[0], out=j1);
-    And(a=instruction[15], b=instruction[1], out=j2);
-    And(a=instruction[15], b=instruction[2], out=j3);
+    // Input multiplexer for A-register: uses instruction or ALU output
+    Mux16(a=instruction, b=aluOut, sel=instruction[15], out=aRegisterInput);
 
-    // Compute flags
-    Not(in=zr, out=notZR);
-    Not(in=ng, out=notNG);
+    // Control load for A-register: A-instruction or destination to A in C-instruction
+    Or(a=isAInstruction, b=instruction[5], out=loadA);
 
-    // Jump Conditions
-    // JGT: notZR & notNG
-    And(a=notZR, b=notNG, out=condJGT);
+    // A-register to store address or data, outputting addressM
+    ARegister(in=aRegisterInput, load=loadA, out=aRegisterOut, out[0..14]=addressM);
 
-    // JEQ: zr
-    // condJEQ is zr (already available)
+    // Mux for ALU input Y: selects between A-register and M (memory input)
+    Mux16(a=aRegisterOut, b=inM, sel=instruction[12], out=aluInputY);
 
-    // JGE: notNG
-    // condJGE is notNG (already available)
+    // D Register - controlled by d2 in instruction for C-instruction
+    And(a=instruction[15], b=instruction[4], out=loadD);
+    DRegister(in=aluOut, load=loadD, out=dRegisterOut);
 
-    // JLT: ng
-    // condJLT is ng (already available)
+    // ALU processing using inputs from D register and selected Y input (A-register or M)
+    ALU(x=dRegisterOut, y=aluInputY, 
+        zx=instruction[11], nx=instruction[10],
+        zy=instruction[9], ny=instruction[8],
+        f=instruction[7], no=instruction[6],
+        out=aluOut, out=outM, zr=zeroFlag, ng=negFlag);
 
-    // JNE: notZR
-    // condJNE is notZR (already available)
+    // Jump logic - using the 3 jump bits in instruction
+    Or(a=negFlag, b=zeroFlag, out=negOrZero);
+    Not(in=negFlag, out=notNeg);
+    Not(in=zeroFlag, out=notZero);
+    Not(in=negOrZero, out=notNegOrZero);
 
-    // JLE: zr | ng
-    Or(a=zr, b=ng, out=condJLE);
-
-    // JMP: Always true
-    // condJMP is true
-
-    // Combine conditions with jump bits
-    And(a=j1, b=condJGT, out=jumpJGT);
-    And(a=j2, b=zr, out=jumpJEQ);
-    And(a=j3, b=ng, out=jumpJLT);
-
-    // Combine all conditions for actual jumps
-    Or(a=jumpJGT, b=jumpJEQ, out=condPartial1);
-    Or(a=condPartial1, b=jumpJLT, out=condActualJump);
+    Mux8Way(a=false,            // No jump (000)
+            b=notNegOrZero,     // Jump if positive (001)
+            c=zeroFlag,         // Jump if zero (010)
+            d=notNeg,           // Jump if non-negative (011)
+            e=negFlag,          // Jump if negative (100)
+            f=notZero,          // Jump if non-zero (101)
+            g=negOrZero,        // Jump if negative or zero (110)
+            h=true,             // Unconditional jump (111)
+            sel[0]=instruction[0], 
+            sel[1]=instruction[1], 
+            sel[2]=instruction[2], 
+            out=jumpCondition);
 
     // Predict "not taken"
-    // pcLoad is true only if a jump condition is true
-    And(a=instruction[15], b=condActualJump, out=pcLoad);
+    // Modify the PC load logic to incorporate "not taken" prediction
+    And(a=instruction[15], b=jumpCondition, out=actualJump);
+    And(a=actualJump, b=true, out=loadPC); // Only load PC on actual jump
 
-    // Program Counter
-    PC(in=A, load=pcLoad, inc=true, reset=reset, out[0..14]=pc);
+    // Program Counter (PC) - defaults to incrementing unless jump condition is met
+    PC(in=aRegisterOut, load=loadPC, inc=true, reset=reset, out[0..14]=pc);
 }
+
