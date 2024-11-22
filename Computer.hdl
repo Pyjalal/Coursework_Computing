@@ -1,21 +1,17 @@
-
 CHIP Computer {
 
-    IN reset;
+    IN reset;  // Reset signal to restart the program execution
 
     PARTS:
 
-    // Supply the 3 parts of the Computer Chip as follows:
+    // CPU: Fetches instructions from ROM, interacts with Memory, and updates the program counter
+    CPU(inM=inM, instruction=instruction, reset=reset, 
+        writeM=writeM, outM=outM, addressM=addressM, pc=pc);
 
+    // RAM (Memory): Stores data for the running program
+    Memory(in=outM, load=writeM, address=addressM, out=inM);
 
-    // CPU
-    CPU(inM=inM, instruction=instruction, reset=reset, writeM=writeM, outM=outM, addressM=addressM, pc=pc);
-    
-    // RAM
-    Memory( in=outM, load=writeM, address=addressM, out=inM);
-
-    // ROM
-   ROM32K(address=pc, out=instruction);
+    // ROM: Stores the program's instructions, addressed by the program counter (pc)
+    ROM32K(address=pc, out=instruction);
 }
-
 
